@@ -67,7 +67,7 @@ jobs:
 
   images:
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -123,8 +123,53 @@ jobs:
             desktop: 0
             python: "3.12"
             gpu: true
+          # The accelerator add-on (C kernels, and the CUDA library on the cuda one),
+          # fetched from its private release with the ACCELERATOR_TOKEN secret.
+          # arm64 builds natively on an Arm runner rather than under QEMU.
+          - variant: accel-amd64
+            flavour: web
+            extras: gui
+            torch_index: ""
+            desktop: 0
+            python: "3.14"
+            gpu: false
+            accel: 1
+            accel_slug: linux-x86_64
+            accel_cuda: 0
+          - variant: accel-arm64
+            flavour: web
+            extras: gui
+            torch_index: ""
+            desktop: 0
+            python: "3.14"
+            gpu: false
+            accel: 1
+            accel_slug: linux-aarch64
+            accel_cuda: 0
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+          - variant: cuda-accel-amd64
+            flavour: web
+            extras: gui,cellpose
+            torch_index: https://download.pytorch.org/whl/cu126
+            desktop: 0
+            python: "3.14"
+            gpu: true
+            accel: 1
+            accel_slug: linux-x86_64
+            accel_cuda: 1
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check the accelerator token
+        if: matrix.accel == 1
+        env:
+          ACCEL_TOKEN: ${{ secrets.ACCELERATOR_TOKEN }}
+        run: |
+          if [ -z "$ACCEL_TOKEN" ]; then
+            echo "::error::ACCELERATOR_TOKEN is not set. It needs read access to contents of FLIMKit/FLIMKit-accelerator-plugin."
+            exit 1
+          fi
 
       - name: Free disk space
         if: matrix.gpu
@@ -139,7 +184,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform || 'linux/amd64' }}
           load: true
           tags: flimkit-smoke:${{ matrix.variant }}
           build-args: |
@@ -149,6 +194,11 @@ jobs:
             TORCH_INDEX=${{ matrix.torch_index }}
             INCLUDE_DESKTOP=${{ matrix.desktop }}
             FLAVOUR=${{ matrix.flavour }}
+            ACCELERATOR=${{ matrix.accel || 0 }}
+            ACCEL_SLUG=${{ matrix.accel_slug || 'linux-x86_64' }}
+            ACCEL_CUDA=${{ matrix.accel_cuda || 0 }}
+          secrets: |
+            accel_token=${{ secrets.ACCELERATOR_TOKEN }}
           cache-from: type=gha,scope=${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
 
@@ -165,6 +215,18 @@ jobs:
           curl -fsS -u flimkit:smoke http://127.0.0.1:14500/api/state \
             | python3 -c "import json, sys; s = json.load(sys.stdin); print('web UI up:', s['form'], len(s['fields']), 'fields')"
           docker exec smoke python -c "import flimkit; print('flimkit', flimkit.__file__)"
+
+      - name: Smoke test the accelerator
+        if: matrix.accel == 1
+        run: |
+          docker exec smoke python - <<'PY'
+          import ctypes, os
+          d = os.environ['FLIMKIT_PLUGIN_PATH'] + '/flimkit_accelerator_plugin/'
+          lib = ctypes.CDLL(d + 'libflimkit_accelerator.so')
+          print('C kernel abi', lib.flimkit_c_abi_version(), 'threads', lib.flimkit_c_threads())
+          assert lib.flimkit_c_abi_version() == 3
+          assert os.path.exists(d + 'libflimkit_accelerator_cuda.so') == bool(${{ matrix.accel_cuda }})
+          PY
 
       - name: Smoke test the bridge
         if: matrix.flavour == 'bridge'
@@ -197,7 +259,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform || 'linux/amd64' }}
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ matrix.variant }}
@@ -209,4 +271,9 @@ jobs:
             TORCH_INDEX=${{ matrix.torch_index }}
             INCLUDE_DESKTOP=${{ matrix.desktop }}
             FLAVOUR=${{ matrix.flavour }}
+            ACCELERATOR=${{ matrix.accel || 0 }}
+            ACCEL_SLUG=${{ matrix.accel_slug || 'linux-x86_64' }}
+            ACCEL_CUDA=${{ matrix.accel_cuda || 0 }}
+          secrets: |
+            accel_token=${{ secrets.ACCELERATOR_TOKEN }}
           cache-from: type=gha,scope=${{ matrix.variant }}
