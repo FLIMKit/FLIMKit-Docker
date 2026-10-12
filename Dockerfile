@@ -1,4 +1,31 @@
 ARG PYTHON_VERSION=3.14
+
+# Throwaway stage that fetches the accelerator add-on from its GitHub release.
+# The repo is private, so the token comes in as a build secret and never lands in a layer.
+# With ACCELERATOR=0 it only produces an empty folder.
+FROM debian:bookworm-slim AS accelerator
+ARG ACCELERATOR=0
+ARG ACCEL_SLUG=linux-x86_64
+ARG ACCEL_CUDA=0
+ARG ACCEL_TAG=latest
+RUN mkdir -p /plugins
+RUN --mount=type=secret,id=accel_token \
+    if [ "${ACCELERATOR}" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip jq \
+        && token=$(cat /run/secrets/accel_token) \
+        && repo=https://api.github.com/repos/FLIMKit/FLIMKit-accelerator-plugin/releases \
+        && if [ "${ACCEL_TAG}" = "latest" ]; then url=${repo}/latest; else url=${repo}/tags/${ACCEL_TAG}; fi \
+        && id=$(curl -fsS -H "Authorization: Bearer ${token}" "${url}" \
+               | jq -r ".assets[] | select(.name == \"flimkit-accelerator-${ACCEL_SLUG}.zip\") | .id") \
+        && test -n "${id}" \
+        && curl -fsSL -H "Authorization: Bearer ${token}" -H "Accept: application/octet-stream" \
+               -o /tmp/accel.zip "${repo}/assets/${id}" \
+        && unzip -q /tmp/accel.zip 'flimkit_accelerator_plugin/*' -d /plugins \
+        && if [ "${ACCEL_CUDA}" != "1" ]; then rm -f /plugins/flimkit_accelerator_plugin/*cuda*; fi \
+        && rm -f /plugins/flimkit_accelerator_plugin/kernels.c /plugins/flimkit_accelerator_plugin/kernels.cu \
+        && chmod -R a+rX /plugins; \
+    fi
+
 FROM python:${PYTHON_VERSION}-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -60,6 +87,11 @@ RUN if [ "${INCLUDE_DESKTOP}" = "1" ]; then \
         && icon=$(python -c "import flimkit, os; print(os.path.join(os.path.dirname(flimkit.__file__), 'UI', 'icon.png'))") \
         && for ic in /usr/share/novnc/app/images/icons/novnc-*.png; do [ -e "$ic" ] && cp -f "$icon" "$ic"; done; \
     fi
+
+# Empty unless ACCELERATOR=1. Folders named in FLIMKIT_PLUGIN_PATH load without the
+# "Load from ~/.flimkit/plugins" switch, which nobody can tick inside a container.
+COPY --from=accelerator /plugins /opt/flimkit-plugins
+ENV FLIMKIT_PLUGIN_PATH=/opt/flimkit-plugins
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh

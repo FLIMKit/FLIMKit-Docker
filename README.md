@@ -25,8 +25,13 @@ Then open **http://localhost:14500** and log in as `flimkit` with that password.
 | `cellpose` | adds Cellpose and CPU torch, for "Apply cell mask" | ~2.4 GB |
 | `cuda` | adds Cellpose and CUDA torch, `docker run --gpus all ...` | larger again |
 | `rocm` | adds Cellpose and ROCm torch, `docker run --device /dev/kfd --device /dev/dri ...` | larger again |
+| `accel-amd64` | `latest` plus the [accelerator add-on](https://github.com/FLIMKit/flimkit-accelerator-plugin)'s C kernels, for x86_64 CPUs | `latest` + ~0.1 MB |
+| `accel-arm64` | the same on aarch64 (Graviton, Ampere, Apple silicon under Linux), built natively | `latest` + ~0.1 MB |
+| `cuda-accel-amd64` | `cuda` plus the add-on's C kernels and its CUDA library | `cuda` + ~2.3 MB |
 | `cuda-headless` | the bridge API instead of the web UI, with Cellpose and CUDA torch | ~270 MB less than `cuda` |
 | `rocm-headless` | the same for AMD | ~270 MB less than `rocm` |
+
+The three `accel` tags load the add-on from `/opt/flimkit-plugins` through `FLIMKIT_PLUGIN_PATH`, so free-τ fits use its C (and, on `cuda-accel-amd64` with `--gpus all`, CUDA) kernels without any setup. `FLIMKIT_FIT_BACKEND=cpu` turns it off. The CUDA library needs the host driver only.
 
 GPU fitting in FLIMKit is torch, so every GPU image carries it whether or not Cellpose is installed.
 
