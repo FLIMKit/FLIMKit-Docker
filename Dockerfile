@@ -26,6 +26,37 @@ RUN --mount=type=secret,id=accel_token \
         && chmod -R a+rX /plugins; \
     fi
 
+# Throwaway stage that installs the Python packages into a venv and trims it.
+FROM python:${PYTHON_VERSION}-slim-bookworm AS build
+ARG FLAVOUR=web
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:${PATH}
+
+# Empty TORCH_INDEX leaves torch out, which is most of the image size.
+ARG TORCH_INDEX=
+RUN if [ -n "${TORCH_INDEX}" ]; then \
+        pip install --no-cache-dir torch torchvision --index-url "${TORCH_INDEX}"; \
+    fi
+
+ARG FLIMKIT_VERSION
+ARG FLIMKIT_EXTRAS=gui
+RUN pip install --no-cache-dir "flimkit[${FLIMKIT_EXTRAS}]==${FLIMKIT_VERSION}"
+
+# Switch the default to flimkit-web-ui==<version> once it is published on PyPI
+ARG FLIMKIT_WEB_UI=https://github.com/FLIMKit/flimkit-web-ui/archive/refs/heads/main.zip
+ARG FLIMKIT_BRIDGE=flimkit-bridge
+RUN if [ "${FLAVOUR}" = "web" ]; then \
+        pip install --no-cache-dir "${FLIMKIT_WEB_UI}"; \
+    else \
+        pip install --no-cache-dir "${FLIMKIT_BRIDGE}"; \
+    fi
+
+# Drop what a running install never reads: the packages' own test suites and type
+# stubs. __pycache__ stays, since a non-root user cannot write it back and every
+# start would pay to recompile scipy and friends.
+RUN find /opt/venv -type d -name tests -prune -exec rm -rf {} + \
+    && find /opt/venv -name '*.pyi' -delete
+
 FROM python:${PYTHON_VERSION}-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -47,24 +78,10 @@ RUN if [ "${FLAVOUR}" = "web" ]; then \
 ENV TZ=Etc/UTC \
     MPLCONFIGDIR=/tmp/mpl-cache
 
-# Empty TORCH_INDEX leaves torch out, which is most of the image size.
-ARG TORCH_INDEX=
-RUN if [ -n "${TORCH_INDEX}" ]; then \
-        pip install --no-cache-dir torch torchvision --index-url "${TORCH_INDEX}"; \
-    fi
-
-ARG FLIMKIT_VERSION
-ARG FLIMKIT_EXTRAS=gui
-RUN pip install --no-cache-dir "flimkit[${FLIMKIT_EXTRAS}]==${FLIMKIT_VERSION}"
-
-# Switch the default to flimkit-web-ui==<version> once it is published on PyPI
-ARG FLIMKIT_WEB_UI=https://github.com/FLIMKit/flimkit-web-ui/archive/refs/heads/main.zip
-ARG FLIMKIT_BRIDGE=flimkit-bridge
-RUN if [ "${FLAVOUR}" = "web" ]; then \
-        pip install --no-cache-dir "${FLIMKIT_WEB_UI}"; \
-    else \
-        pip install --no-cache-dir "${FLIMKIT_BRIDGE}"; \
-    fi
+# Everything pip installs is built in the stage above and copied across as one venv,
+# so pip's own scratch space and the strip step below never reach this image.
+COPY --from=build /opt/venv /opt/venv
+ENV PATH=/opt/venv/bin:${PATH}
 
 RUN mkdir -p /tmp/mpl-cache && chmod 777 /tmp/mpl-cache
 
